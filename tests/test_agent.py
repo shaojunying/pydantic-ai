@@ -8294,7 +8294,7 @@ class TestMultipleToolCalls:
                     ),
                     ToolReturnPart(
                         tool_name='deferring_tool',
-                        content='Tool not executed - a final result was already processed.',
+                        content='Tool call deferred - the run ended with a final result before its result was collected.',
                         tool_call_id='deferring',
                         timestamp=IsNow(tz=UTC),
                     ),

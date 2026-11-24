@@ -112,6 +112,9 @@ _OUTPUT_NOT_FINAL_RESULT = 'Output tool processed, but its value will not be the
 _OUTPUT_EXECUTION_FAILED = 'Output tool not used - output function execution failed.'
 _OUTPUT_VALIDATION_FAILED = 'Output tool not used - output failed validation.'
 _TOOL_SKIPPED_FINAL_ALREADY_PROCESSED = 'Tool not executed - a final result was already processed.'
+_DEFERRED_RESULT_NOT_COLLECTED = (
+    'Tool call deferred - the run ended with a final result before its result was collected.'
+)
 
 
 def cancelled_sub_agent_return(
@@ -1173,15 +1176,16 @@ class _ToolCallProcessor(Generic[DepsT, NodeRunEndT], ABC):
     def _skip_deferred_calls(self) -> Iterator[_messages.HandleResponseEvent]:
         """Answer the calls that tools deferred while running, as the step ended on a final result instead.
 
-        They get the stub `_collect_deferred_calls` gives a call deferred by its tool's kind, so the history doesn't
-        end on a call without a result. Their `FunctionToolCallEvent`s were emitted when they were validated, so only
-        the result events are emitted here.
+        Each gets one result, so the history doesn't end on a call without a result. Unlike the stub
+        `_collect_deferred_calls` gives a call deferred by its tool's kind, the result doesn't say the tool didn't run:
+        a tool can start work elsewhere before it defers. Their `FunctionToolCallEvent`s were emitted when they were
+        validated, so only the result events are emitted here.
         """
         for bucket in _DEFERRED_BUCKETS:
             for call in self.deferred_calls[bucket]:
                 part = _messages.ToolReturnPart(
                     tool_name=call.tool_name,
-                    content=_TOOL_SKIPPED_FINAL_ALREADY_PROCESSED,
+                    content=_DEFERRED_RESULT_NOT_COLLECTED,
                     tool_call_id=call.tool_call_id,
                 )
                 self.output_parts.append(part)

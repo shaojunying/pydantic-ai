@@ -4567,7 +4567,10 @@ class TestMultipleToolCalls:
         ] == snapshot(
             [
                 ('output', 'Final result processed.'),
-                ('deferring', 'Tool not executed - a final result was already processed.'),
+                (
+                    'deferring',
+                    'Tool call deferred - the run ended with a final result before its result was collected.',
+                ),
             ]
         )
 
