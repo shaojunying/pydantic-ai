@@ -1510,6 +1510,7 @@ class _ExhaustiveProcessor(_ToolCallProcessor[DepsT, NodeRunEndT]):
                     raise
                 except BaseException:
                     await cancel_and_drain(*tasks)
+                    self._record_finished_function_returns(tasks, function_parts, function_user_parts)
                     raise
 
             # Pick the winner: first valid output by emission order (or the streamed-in result).
@@ -1590,3 +1591,28 @@ class _ExhaustiveProcessor(_ToolCallProcessor[DepsT, NodeRunEndT]):
             deferred_validated_args=self.deferred_validated_args,
         )
         self.ctx.state.output_retries_used += self.output_retries_increment
+
+    def _record_finished_function_returns(
+        self,
+        tasks: list[asyncio.Task[tuple[int, _ToolCallPayload[NodeRunEndT]]]],
+        function_parts: dict[int, _FunctionCallParts],
+        function_user_parts: dict[int, _messages.ModelRequestPart],
+    ) -> None:
+        """Keep the returns of function tools whose tasks finished with an earlier-emitted sibling that raised.
+
+        Tasks that finish in the same event loop iteration are taken in emission order, so the sibling's exception
+        ends the segment before the later finished tasks are taken. Recording their returns here lets the `finally`
+        in `_run_strategy` put them in the interrupted request, as `_call_tools` does, so resuming from that history
+        doesn't run those tools again. No result events are emitted for them.
+        """
+        for task in tasks:
+            if task.cancelled() or task.exception() is not None:
+                continue
+            index, payload = task.result()
+            if not isinstance(payload, tuple):
+                # A deferral, or an output tool's result: the interrupted request records neither.
+                continue
+            tool_parts, tool_user_content = payload
+            function_parts[index] = tool_parts
+            if tool_user_content:
+                function_user_parts[index] = self._tool_user_part(self.tool_calls[index], tool_user_content)
