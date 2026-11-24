@@ -4540,6 +4540,44 @@ class TestMultipleToolCalls:
         assert output.value == 'a'
         assert sorted(called) == ['tool_a', 'tool_b']
 
+    @pytest.mark.parametrize('end_strategy', ['graceful', 'exhaustive'])
+    @pytest.mark.parametrize('deferral', [ApprovalRequired, CallDeferred])
+    async def test_call_deferred_while_running_is_answered_when_an_output_wins(
+        self, end_strategy: Literal['graceful', 'exhaustive'], deferral: type[ApprovalRequired | CallDeferred]
+    ):
+        """A call its tool defers while running, next to the streamed output, gets a result and a result event."""
+
+        async def stream_function(_: list[ModelMessage], info: AgentInfo) -> AsyncIterator[DeltaToolCalls | str]:
+            yield {0: DeltaToolCall('deferring_tool', '{}', tool_call_id='deferring')}
+            yield {1: DeltaToolCall('final_result', '{"value": "final"}', tool_call_id='output')}
+
+        agent = Agent(FunctionModel(stream_function=stream_function), output_type=OutputType, end_strategy=end_strategy)
+
+        @agent.tool_plain
+        def deferring_tool() -> str:
+            raise deferral
+
+        async with agent.run_stream('test') as result:
+            output = await result.get_output()
+        assert output == OutputType(value='final')
+        assert [
+            (part.tool_call_id, part.content)
+            for part in result.new_messages()[-1].parts
+            if isinstance(part, ToolReturnPart)
+        ] == snapshot(
+            [
+                ('output', 'Final result processed.'),
+                ('deferring', 'Tool not executed - a final result was already processed.'),
+            ]
+        )
+
+        events: list[tuple[str, str]] = []
+        async with agent.run_stream_events('test') as stream:
+            async for event in stream:
+                if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
+                    events.append((type(event).__name__, event.tool_call_id))
+        assert events == snapshot([('FunctionToolCallEvent', 'deferring'), ('FunctionToolResultEvent', 'deferring')])
+
     async def test_exhaustive_tool_output_sequential_barrier(self):
         """`ToolOutput(sequential=True)` under streaming: the output is committed as it streams, so
         (unlike the non-streaming path) it isn't held behind the function tool; the function tool

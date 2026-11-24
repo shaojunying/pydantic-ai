@@ -1166,6 +1166,26 @@ class _ToolCallProcessor(Generic[DepsT, NodeRunEndT], ABC):
             async with aclosing(self._resolve_deferred_calls()) as events:
                 async for event in events:
                     yield event
+        elif self.final_result and not isinstance(self.final_result.output, DeferredToolRequests):
+            for event in self._skip_deferred_calls():
+                yield event
+
+    def _skip_deferred_calls(self) -> Iterator[_messages.HandleResponseEvent]:
+        """Answer the calls that tools deferred while running, as the step ended on a final result instead.
+
+        They get the stub `_collect_deferred_calls` gives a call deferred by its tool's kind, so the history doesn't
+        end on a call without a result. Their `FunctionToolCallEvent`s were emitted when they were validated, so only
+        the result events are emitted here.
+        """
+        for bucket in _DEFERRED_BUCKETS:
+            for call in self.deferred_calls[bucket]:
+                part = _messages.ToolReturnPart(
+                    tool_name=call.tool_name,
+                    content=_TOOL_SKIPPED_FINAL_ALREADY_PROCESSED,
+                    tool_call_id=call.tool_call_id,
+                )
+                self.output_parts.append(part)
+                yield _messages.FunctionToolResultEvent(part)
 
     async def _collect_deferred_calls(self) -> AsyncIterator[_messages.AgentStreamEvent]:
         """Stub deferred calls (a final result was reached) or validate-and-collect them for resolution."""

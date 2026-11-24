@@ -86,7 +86,7 @@ from pydantic_ai.capabilities import (
     WrapRunHandler,
 )
 from pydantic_ai.durable_exec._base import construction_toolsets
-from pydantic_ai.exceptions import ContentFilterError
+from pydantic_ai.exceptions import ApprovalRequired, ContentFilterError
 from pydantic_ai.messages import AgentStreamEvent, FunctionToolResultEvent, ModelResponseStreamEvent
 from pydantic_ai.models import KnownModelName, Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.function import AgentInfo, BuiltinToolCallsReturns, DeltaToolCall, DeltaToolCalls, FunctionModel
@@ -8258,6 +8258,52 @@ class TestMultipleToolCalls:
         result = agent.run_sync('test')
         assert isinstance(result.output, DeferredToolRequests)
         assert result.output.calls == snapshot([ToolCallPart(tool_name='slow_tool', args={}, tool_call_id='slow')])
+
+    @pytest.mark.parametrize('end_strategy', ['graceful', 'exhaustive'])
+    @pytest.mark.parametrize('deferral', [ApprovalRequired, CallDeferred])
+    def test_call_deferred_while_running_is_answered_when_an_output_wins(
+        self, end_strategy: Literal['graceful', 'exhaustive'], deferral: type[ApprovalRequired | CallDeferred]
+    ):
+        """A call its tool defers while running, next to an output tool call that wins, gets the stub a call
+        deferred by its tool's kind gets, so the history doesn't end on a call without a result."""
+
+        def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('deferring_tool', {}, tool_call_id='deferring'),
+                    ToolCallPart('final_result', {'value': 'final'}, tool_call_id='output'),
+                ]
+            )
+
+        agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy=end_strategy)
+
+        @agent.tool_plain
+        def deferring_tool() -> str:
+            raise deferral
+
+        result = agent.run_sync('test')
+        assert result.output == OutputType(value='final')
+        assert result.new_messages()[-1] == snapshot(
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name='final_result',
+                        content='Final result processed.',
+                        tool_call_id='output',
+                        timestamp=IsNow(tz=UTC),
+                    ),
+                    ToolReturnPart(
+                        tool_name='deferring_tool',
+                        content='Tool not executed - a final result was already processed.',
+                        tool_call_id='deferring',
+                        timestamp=IsNow(tz=UTC),
+                    ),
+                ],
+                timestamp=IsNow(tz=UTC),
+                run_id=IsStr(),
+                conversation_id=IsStr(),
+            )
+        )
 
     async def test_exhaustive_outer_cancellation_cancels_pending_tools(self):
         """Outer cancellation during `exhaustive` parallel execution cancels still-pending tool tasks."""
